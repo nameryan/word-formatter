@@ -382,7 +382,7 @@ function patchStyleRpr(styleNode, doc, font, sizePt, bold, color) {
   }
 }
 
-function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt, indent) {
+function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt) {
   var pPr = ensureDirectChild(styleNode, "pPr", doc, false);
   removeDirectChild(pPr, "spacing");
   var sp = createWEl(doc, "spacing");
@@ -391,13 +391,8 @@ function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt, i
   if (afterPt != null)   setWAttr(sp, "after",  Math.round(afterPt * 20));
   pPr.appendChild(sp);
   removeDirectChild(pPr, "contextualSpacing");
-  // First-line indent
-  removeAllDirectChildren(pPr, "ind");
-  if (indent && indent.twips > 0) {
-    var indEl = createWEl(doc, "ind");
-    setWAttr(indEl, "firstLine", indent.twips);
-    pPr.appendChild(indEl);
-  }
+  // Note: first-line indent is NOT set here — it's applied per-paragraph in
+  // document.xml only, to avoid cascading into table cells and other styles.
 }
 
 function patchStyles(stylesXml, config) {
@@ -406,7 +401,7 @@ function patchStyles(stylesXml, config) {
   // Normal / body style
   var normalNode = getOrCreateStyleNode(doc, "Normal", NORMAL_IDS);
   patchStyleRpr(normalNode, doc, config.body.font, config.body.sizePt, false, null);
-  patchStylePpr(normalNode, doc, config.body.lineValue, config.body.lineRule, config.body.beforePt, config.body.afterPt, config.body.indent);
+  patchStylePpr(normalNode, doc, config.body.lineValue, config.body.lineRule, config.body.beforePt, config.body.afterPt);
 
   // Heading styles
   config.headings.forEach(function(h, i) {
@@ -467,9 +462,11 @@ function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt, ind
   if (afterPt != null)   setWAttr(sp, "after",  Math.round(afterPt  * 20));
   pPr.appendChild(sp);
   removeAllDirectChildren(pPr, "contextualSpacing");
-  // First-line indent — skip list paragraphs (they manage their own indent via numPr)
+  // First-line indent:
+  //   - Skip list paragraphs (numPr manages their indent)
+  //   - Skip table-cell paragraphs entirely
   var hasNumPr = !!getFirstEl(pPr, "numPr");
-  if (!hasNumPr) {
+  if (!hasNumPr && !isInTableCell(para)) {
     removeAllDirectChildren(pPr, "ind");
     if (indent && indent.twips > 0) {
       var indEl = createWEl(doc, "ind");
@@ -477,6 +474,19 @@ function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt, ind
       pPr.appendChild(indEl);
     }
   }
+}
+
+// Returns true if the paragraph is inside a table cell (<w:tc>).
+function isInTableCell(para) {
+  var node = para.parentNode;
+  while (node) {
+    if (node.nodeType === 1 && node.namespaceURI === W_NS) {
+      if (node.localName === "tc")   return true;
+      if (node.localName === "body") return false;
+    }
+    node = node.parentNode;
+  }
+  return false;
 }
 
 // Get heading level (1-6) from style ID, or 0 if not a heading.
