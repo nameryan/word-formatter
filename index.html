@@ -119,6 +119,20 @@
           <input type="number" id="after-pt" value="0" min="0" max="72" step="1" />
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="indent-type">首行缩进（正文）</label>
+          <select id="indent-type">
+            <option value="none">无缩进</option>
+            <option value="2" selected>首行缩进 2 字符</option>
+            <option value="custom">自定义字符数</option>
+          </select>
+        </div>
+        <div class="form-group" id="indent-custom-wrap" style="display:none">
+          <label for="indent-chars">缩进字符数</label>
+          <input type="number" id="indent-chars" value="2" min="0" max="10" step="0.5" />
+        </div>
+      </div>
     </div>
   </div>
 
@@ -368,7 +382,7 @@ function patchStyleRpr(styleNode, doc, font, sizePt, bold, color) {
   }
 }
 
-function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt) {
+function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt, indent) {
   var pPr = ensureDirectChild(styleNode, "pPr", doc, false);
   removeDirectChild(pPr, "spacing");
   var sp = createWEl(doc, "spacing");
@@ -377,6 +391,13 @@ function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt) {
   if (afterPt != null)   setWAttr(sp, "after",  Math.round(afterPt * 20));
   pPr.appendChild(sp);
   removeDirectChild(pPr, "contextualSpacing");
+  // First-line indent
+  removeAllDirectChildren(pPr, "ind");
+  if (indent && indent.twips > 0) {
+    var indEl = createWEl(doc, "ind");
+    setWAttr(indEl, "firstLine", indent.twips);
+    pPr.appendChild(indEl);
+  }
 }
 
 function patchStyles(stylesXml, config) {
@@ -385,7 +406,7 @@ function patchStyles(stylesXml, config) {
   // Normal / body style
   var normalNode = getOrCreateStyleNode(doc, "Normal", NORMAL_IDS);
   patchStyleRpr(normalNode, doc, config.body.font, config.body.sizePt, false, null);
-  patchStylePpr(normalNode, doc, config.body.lineValue, config.body.lineRule, config.body.beforePt, config.body.afterPt);
+  patchStylePpr(normalNode, doc, config.body.lineValue, config.body.lineRule, config.body.beforePt, config.body.afterPt, config.body.indent);
 
   // Heading styles
   config.headings.forEach(function(h, i) {
@@ -435,7 +456,7 @@ function removeAllDirectChildren(parent, localName) {
   for (var j = 0; j < toRemove.length; j++) parent.removeChild(toRemove[j]);
 }
 
-function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt) {
+function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt, indent) {
   // pPr must be the FIRST child of <w:p>
   var pPr = ensureDirectChild(para, "pPr", doc, true);
   // Remove ALL existing spacing elements (some docs have duplicates)
@@ -446,6 +467,16 @@ function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt) {
   if (afterPt != null)   setWAttr(sp, "after",  Math.round(afterPt  * 20));
   pPr.appendChild(sp);
   removeAllDirectChildren(pPr, "contextualSpacing");
+  // First-line indent — skip list paragraphs (they manage their own indent via numPr)
+  var hasNumPr = !!getFirstEl(pPr, "numPr");
+  if (!hasNumPr) {
+    removeAllDirectChildren(pPr, "ind");
+    if (indent && indent.twips > 0) {
+      var indEl = createWEl(doc, "ind");
+      setWAttr(indEl, "firstLine", indent.twips);
+      pPr.appendChild(indEl);
+    }
+  }
 }
 
 // Get heading level (1-6) from style ID, or 0 if not a heading.
@@ -472,11 +503,13 @@ function patchDocument(docXml, config) {
         hCfg.lineValue || config.body.lineValue,
         hCfg.lineRule  || config.body.lineRule,
         hCfg.beforePt != null ? hCfg.beforePt : 6,
-        hCfg.afterPt  != null ? hCfg.afterPt  : 6);
+        hCfg.afterPt  != null ? hCfg.afterPt  : 6,
+        null);  // headings don't get first-line indent
     } else {
       patchParaSpacing(para, doc,
         config.body.lineValue, config.body.lineRule,
-        config.body.beforePt, config.body.afterPt);
+        config.body.beforePt, config.body.afterPt,
+        config.body.indent);
     }
 
     // Patch runs
@@ -588,6 +621,12 @@ function collectConfig() {
   var lv = getLineValue(getSelectedLineSpacing(), document.getElementById("custom-line").value);
   var beforePt = parseFloat(document.getElementById("before-pt").value) || 0;
   var afterPt  = parseFloat(document.getElementById("after-pt").value)  || 0;
+  var indentType  = document.getElementById("indent-type").value;
+  var indentChars = indentType === "none" ? 0
+                  : indentType === "custom" ? (parseFloat(document.getElementById("indent-chars").value) || 2)
+                  : parseFloat(indentType);  // "2" → 2 chars
+  // indent.twips = chars × font-size-pt × 20
+  var indent = indentChars > 0 ? { twips: Math.round(indentChars * bodySizePt * 20) } : null;
 
   var headings = [1,2,3,4,5,6].map(function(i) {
     return {
@@ -609,7 +648,7 @@ function collectConfig() {
   }
 
   return {
-    body: { font: bodyFont, sizePt: bodySizePt, lineValue: lv.lineValue, lineRule: lv.lineRule, beforePt: beforePt, afterPt: afterPt },
+    body: { font: bodyFont, sizePt: bodySizePt, lineValue: lv.lineValue, lineRule: lv.lineRule, beforePt: beforePt, afterPt: afterPt, indent: indent },
     headings: headings,
     margins: margins,
   };
@@ -687,6 +726,9 @@ function resetToDefaults() {
   document.getElementById("custom-line").value = "28";
   document.getElementById("before-pt").value = "0";
   document.getElementById("after-pt").value = "0";
+  document.getElementById("indent-type").value = "2";
+  document.getElementById("indent-chars").value = "2";
+  document.getElementById("indent-custom-wrap").style.display = "none";
   document.getElementById("margin-top").value = "2.54";
   document.getElementById("margin-bottom").value = "2.54";
   document.getElementById("margin-left").value = "3.18";
@@ -742,6 +784,10 @@ changeFileBtn.addEventListener("click", function() {
 
 actionBtn.addEventListener("click", handleFormat);
 resetBtn.addEventListener("click", resetToDefaults);
+
+document.getElementById("indent-type").addEventListener("change", function() {
+  document.getElementById("indent-custom-wrap").style.display = this.value === "custom" ? "" : "none";
+});
 
 document.querySelectorAll('input[name="line-spacing"]').forEach(function(radio) {
   radio.addEventListener("change", function() {
