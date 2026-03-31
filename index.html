@@ -465,13 +465,40 @@ function patchParaSpacing(para, doc, lineValue, lineRule, beforePt, afterPt, ind
   // First-line indent:
   //   - Skip list paragraphs (numPr manages their indent)
   //   - Skip table-cell paragraphs entirely
+  // ----- First-line indent -----
+  // Rules:
+  //   false  → caller says "don't touch <w:ind> at all" (headings)
+  //   null   → "无缩进": remove w:firstLine only, preserve w:left / w:right
+  //   {twips} → set w:firstLine, preserve w:left / w:right
+  //
+  // Also skip: list paragraphs (numPr), table cells, and special styles
+  // (TOC, bibliography, caption, etc.) whose indent comes from their style.
   var hasNumPr = !!getFirstEl(pPr, "numPr");
-  if (!hasNumPr && !isInTableCell(para)) {
-    removeAllDirectChildren(pPr, "ind");
+  var styleId  = getParaStyleId(para) || "";
+  var isSpecialStyle = /^(TOC|目录|toc|Bibliography|参考文献|Caption|题注|Index|索引|Footnote|脚注|Endnote|尾注|Header|页眉|Footer|页脚)/i.test(styleId);
+
+  if (indent !== false && !hasNumPr && !isInTableCell(para) && !isSpecialStyle) {
+    // Find existing direct <w:ind> in this paragraph's pPr (if any)
+    var indEl = getFirstEl(pPr, "ind");
+
     if (indent && indent.twips > 0) {
-      var indEl = createWEl(doc, "ind");
-      setWAttr(indEl, "firstLine", indent.twips);
-      pPr.appendChild(indEl);
+      // Ensure element exists
+      if (!indEl) { indEl = createWEl(doc, "ind"); pPr.appendChild(indEl); }
+      // firstLine and hanging are mutually exclusive in Word
+      indEl.removeAttribute("w:hanging");
+      indEl.removeAttributeNS(W_NS, "hanging");
+      indEl.removeAttribute("w:firstLineChars");
+      indEl.removeAttributeNS(W_NS, "firstLineChars");
+      // Set firstLine (preserves w:left, w:right if already on element)
+      indEl.setAttribute("w:firstLine", String(indent.twips));
+    } else if (indent === null && indEl) {
+      // "无缩进": strip firstLine attributes, leave the rest intact
+      indEl.removeAttribute("w:firstLine");
+      indEl.removeAttributeNS(W_NS, "firstLine");
+      indEl.removeAttribute("w:firstLineChars");
+      indEl.removeAttributeNS(W_NS, "firstLineChars");
+      // If <w:ind> has no remaining attributes, remove the empty element
+      if (indEl.attributes.length === 0) pPr.removeChild(indEl);
     }
   }
 }
@@ -505,16 +532,13 @@ function patchDocument(docXml, config) {
     var isHeading = headingLevel > 0;
 
     if (isHeading) {
-      // Apply heading spacing DIRECTLY to document.xml too.
-      // Styles.xml alone is not enough — direct <w:spacing> in the paragraph's
-      // pPr takes precedence and will block the styles.xml value if not cleared.
       var hCfg = config.headings[headingLevel - 1] || {};
       patchParaSpacing(para, doc,
         hCfg.lineValue || config.body.lineValue,
         hCfg.lineRule  || config.body.lineRule,
         hCfg.beforePt != null ? hCfg.beforePt : 6,
         hCfg.afterPt  != null ? hCfg.afterPt  : 6,
-        null);  // headings don't get first-line indent
+        false);  // false = don't touch <w:ind> for headings
     } else {
       patchParaSpacing(para, doc,
         config.body.lineValue, config.body.lineRule,
