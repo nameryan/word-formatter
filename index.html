@@ -614,16 +614,40 @@ function patchDocument(docXml, config) {
       }
       numStr += "\u3000"; // ideographic space as separator (standard Chinese doc style)
 
-      // Strip any existing leading number from the first text run
-      var runs = getEls(para, "r");
-      for (var ri = 0; ri < runs.length; ri++) {
-        var tEl = getFirstEl(runs[ri], "t");
-        if (tEl && tEl.textContent.length > 0) {
-          // Strip patterns: "1. " "1.1 " "1.1.1 " "第1章 " "第一章　" etc.
-          tEl.textContent = tEl.textContent
-            .replace(/^(\d+\.)*\d+[\.\s\u3000]+/, "")
-            .replace(/^第[\d○一二三四五六七八九十百千]+[章节条款篇部]\s*[\s\u3000]*/, "");
-          break;
+      // --- Strip existing leading numbers (multi-run aware) ---
+      // 1. Collect all text runs (skip field runs)
+      var allRuns = getEls(para, "r");
+      var textRuns = [];
+      allRuns.forEach(function(run) {
+        if (getFirstEl(run, "instrText")) return;
+        var tEl = getFirstEl(run, "t");
+        if (tEl != null) textRuns.push({ run: run, tEl: tEl });
+      });
+
+      // 2. Concatenate text from all runs
+      var fullText = textRuns.map(function(r) { return r.tEl.textContent; }).join("");
+
+      // 3. Match leading number patterns (greedy, handles multi-part numbers)
+      //    Covers: 1. | 1.1 | 1.1.1. | 第1章 | 第一章 | A. | (1) | 一、 | 1 space
+      var numMatch = fullText.match(
+        /^(?:(?:\d+\.)*\d+[\s\.\u3000、，,\uff0c]+|第[\d○零一二三四五六七八九十百千]+[章节条款篇部附]\s*[\s\u3000]*|[A-Za-z][\.\)]\s+|[（(]\d+[)）]\s*|[一二三四五六七八九十]+[、\.\s\u3000]+)/
+      );
+      if (numMatch) {
+        var charsLeft = numMatch[0].length;
+        // 4. Consume characters from runs front-to-back
+        for (var ri = 0; ri < textRuns.length && charsLeft > 0; ri++) {
+          var item = textRuns[ri];
+          var t = item.tEl.textContent;
+          if (t.length <= charsLeft) {
+            charsLeft -= t.length;
+            // Run fully consumed — remove it only if it had just the number
+            item.tEl.textContent = "";
+            // Remove run if it's now empty (no other content)
+            if (!item.tEl.textContent) item.run.parentNode && item.run.parentNode.removeChild(item.run);
+          } else {
+            item.tEl.textContent = t.slice(charsLeft);
+            charsLeft = 0;
+          }
         }
       }
 
