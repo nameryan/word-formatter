@@ -77,6 +77,16 @@
   <div class="card">
     <div class="card-header">📑 标题格式</div>
     <div class="card-body">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+        <label style="font-size:12px;font-weight:500;color:var(--gray-500);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap">自动编号</label>
+        <select id="heading-numbering" style="flex:1;min-width:180px">
+          <option value="none">不添加序号</option>
+          <option value="numeric" selected>1 / 1.1 / 1.1.1（数字）</option>
+          <option value="chinese">第1章 / 1.1 / 1.1.1（中文章节）</option>
+        </select>
+        <label style="font-size:12px;color:var(--gray-500);white-space:nowrap">起始编号</label>
+        <input type="number" id="heading-start" value="1" min="0" max="99" step="1" style="width:60px" />
+      </div>
       <table class="heading-table">
         <thead>
           <tr>
@@ -572,6 +582,67 @@ function patchDocument(docXml, config) {
     });
   });
 
+  // ---- Heading numbering ----
+  if (config.headingNumbering && config.headingNumbering !== "none") {
+    var counters = [0, 0, 0, 0, 0, 0];
+    var startNum = config.headingNumberingStart || 1;
+    var firstH1 = true;
+
+    // Collect heading paragraphs in DOM order
+    var allParas = getEls(doc, "p");
+    allParas.forEach(function(para) {
+      var sid = getParaStyleId(para) || "";
+      var lvl = getHeadingLevel(sid); // 1-6, 0 = not heading
+      if (!lvl) return;
+
+      var idx = lvl - 1; // 0-based index
+      if (idx === 0 && firstH1) {
+        counters[0] = startNum - 1; // will be incremented below
+        firstH1 = false;
+      }
+      counters[idx]++;
+      // Reset all deeper levels
+      for (var k = idx + 1; k < 6; k++) counters[k] = 0;
+
+      // Build number string
+      var parts = counters.slice(0, idx + 1);
+      var numStr;
+      if (config.headingNumbering === "chinese" && idx === 0) {
+        numStr = "第" + parts[0] + "章";
+      } else {
+        numStr = parts.join(".");
+      }
+      numStr += "\u3000"; // ideographic space as separator (standard Chinese doc style)
+
+      // Strip any existing leading number from the first text run
+      var runs = getEls(para, "r");
+      for (var ri = 0; ri < runs.length; ri++) {
+        var tEl = getFirstEl(runs[ri], "t");
+        if (tEl && tEl.textContent.length > 0) {
+          // Strip patterns: "1. " "1.1 " "1.1.1 " "第1章 " "第一章　" etc.
+          tEl.textContent = tEl.textContent
+            .replace(/^(\d+\.)*\d+[\.\s\u3000]+/, "")
+            .replace(/^第[\d○一二三四五六七八九十百千]+[章节条款篇部]\s*[\s\u3000]*/, "");
+          break;
+        }
+      }
+
+      // Build the number run (inherit heading font from styles.xml via empty rPr)
+      var numRun = createWEl(doc, "r");
+      var numRpr = createWEl(doc, "rPr");
+      numRun.appendChild(numRpr);
+      var numT = createWEl(doc, "t");
+      numT.setAttribute("xml:space", "preserve");
+      numT.textContent = numStr;
+      numRun.appendChild(numT);
+
+      // Insert right after <w:pPr> (or as first child if no pPr)
+      var pPrEl = getFirstEl(para, "pPr");
+      var insertRef = pPrEl ? pPrEl.nextSibling : para.firstChild;
+      para.insertBefore(numRun, insertRef);
+    });
+  }
+
   // Page margins
   if (config.margins) {
     var CM = 567; // 1cm ≈ 567 twips
@@ -685,6 +756,8 @@ function collectConfig() {
     body: { font: bodyFont, sizePt: bodySizePt, lineValue: lv.lineValue, lineRule: lv.lineRule, beforePt: beforePt, afterPt: afterPt, indent: indent },
     headings: headings,
     margins: margins,
+    headingNumbering: document.getElementById("heading-numbering").value,
+    headingNumberingStart: parseInt(document.getElementById("heading-start").value) || 1,
   };
 }
 
@@ -763,6 +836,8 @@ function resetToDefaults() {
   document.getElementById("indent-type").value = "2";
   document.getElementById("indent-chars").value = "2";
   document.getElementById("indent-custom-wrap").style.display = "none";
+  document.getElementById("heading-numbering").value = "numeric";
+  document.getElementById("heading-start").value = "1";
   document.getElementById("margin-top").value = "2.54";
   document.getElementById("margin-bottom").value = "2.54";
   document.getElementById("margin-left").value = "3.18";
