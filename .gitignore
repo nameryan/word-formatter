@@ -1,0 +1,9 @@
+.DS_Store
+.claude/
+
+# Local experiments and non-product subprojects
+leak-check/
+
+# Python caches if local scripts are added later
+__pycache__/
+*.pyc
