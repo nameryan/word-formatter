@@ -70,6 +70,10 @@
           </select>
         </div>
       </div>
+      <div class="apply-margins-row" style="margin-top:10px">
+        <input type="checkbox" id="skip-cover" checked />
+        <label for="skip-cover">跳过第一页（封面），不修改其字体和字号</label>
+      </div>
     </div>
   </div>
 
@@ -403,6 +407,7 @@ function patchStylePpr(styleNode, doc, lineValue, lineRule, beforePt, afterPt) {
   removeDirectChild(pPr, "contextualSpacing");
   // Note: first-line indent is NOT set here — it's applied per-paragraph in
   // document.xml only, to avoid cascading into table cells and other styles.
+  return pPr;
 }
 
 function patchStyles(stylesXml, config) {
@@ -410,7 +415,6 @@ function patchStyles(stylesXml, config) {
 
   // Normal / body style
   var normalNode = getOrCreateStyleNode(doc, "Normal", NORMAL_IDS);
-  patchStyleRpr(normalNode, doc, config.body.font, config.body.sizePt, false, null);
   patchStylePpr(normalNode, doc, config.body.lineValue, config.body.lineRule, config.body.beforePt, config.body.afterPt);
 
   // Heading styles
@@ -426,13 +430,15 @@ function patchStyles(stylesXml, config) {
       styleNode.insertBefore(nameEl, styleNode.firstChild);
     }
 
-    patchStyleRpr(styleNode, doc, h.font, h.sizePt, h.bold !== false, h.color || null);
-    patchStylePpr(styleNode, doc,
+    var headingPPr = patchStylePpr(styleNode, doc,
       h.lineValue || config.body.lineValue,
       h.lineRule  || config.body.lineRule,
       h.beforePt != null ? h.beforePt : 6,
       h.afterPt  != null ? h.afterPt  : 6
     );
+    if (config.headingNumbering && config.headingNumbering !== "none") {
+      removeAllDirectChildren(headingPPr, "numPr");
+    }
   });
 
   return serializeXml(doc);
@@ -449,6 +455,14 @@ function getParaStyleId(para) {
   var pStyle = getFirstEl(pPr, "pStyle");
   if (!pStyle) return null;
   return getWAttr(pStyle, "val") || null;
+}
+
+function getDirectChild(parent, localName) {
+  for (var i = 0; i < parent.childNodes.length; i++) {
+    var c = parent.childNodes[i];
+    if (c.nodeType === 1 && c.localName === localName && c.namespaceURI === W_NS) return c;
+  }
+  return null;
 }
 
 // Remove ALL direct children with the given local name (not just the first).
@@ -532,14 +546,113 @@ function getHeadingLevel(styleId) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Returns true if <w:pPr> contains <w:pageBreakBefore/> (para starts new page).
+function hasPageBreakBefore(para) {
+  var pPr = getFirstEl(para, "pPr");
+  return pPr ? !!getFirstEl(pPr, "pageBreakBefore") : false;
+}
+
+// Returns true if any run in the para contains <w:br w:type="page"/>.
+function hasExplicitPageBreak(para) {
+  var runs = getEls(para, "r");
+  for (var i = 0; i < runs.length; i++) {
+    var br = getFirstEl(runs[i], "br");
+    if (br) {
+      var t = br.getAttribute("w:type") || br.getAttributeNS(W_NS, "type");
+      if (t === "page") return true;
+    }
+  }
+  return false;
+}
+
+function hasLastRenderedPageBreak(para) {
+  var runs = getEls(para, "r");
+  for (var i = 0; i < runs.length; i++) {
+    if (getFirstEl(runs[i], "lastRenderedPageBreak")) return true;
+  }
+  return false;
+}
+
+function getParaSectPr(para) {
+  var pPr = getFirstEl(para, "pPr");
+  return pPr ? getFirstEl(pPr, "sectPr") : null;
+}
+
+function getSectionBreakType(sectPr) {
+  if (!sectPr) return null;
+  var typeEl = getDirectChild(sectPr, "type");
+  var val = typeEl ? getWAttr(typeEl, "val") : "";
+  return val || "nextPage";
+}
+
+function endsWithSectionPageBreak(para) {
+  var sectPr = getParaSectPr(para);
+  if (!sectPr) return false;
+  var type = getSectionBreakType(sectPr);
+  return type !== "continuous";
+}
+
+function getParaText(para) {
+  return getEls(para, "t").map(function(t) { return t.textContent || ""; }).join("");
+}
+
+function applyRunFormatting(rPr, doc, font, sizePt, bold, color) {
+  if (font) replaceDirectChild(rPr, "rFonts", buildRFonts(doc, font));
+  if (sizePt) {
+    replaceDirectChild(rPr, "sz",   buildSzEl(doc, "sz",   sizePt));
+    replaceDirectChild(rPr, "szCs", buildSzEl(doc, "szCs", sizePt));
+  }
+
+  removeDirectChild(rPr, "b");
+  removeDirectChild(rPr, "bCs");
+  if (bold) {
+    rPr.appendChild(createWEl(doc, "b"));
+    rPr.appendChild(createWEl(doc, "bCs"));
+  }
+
+  removeDirectChild(rPr, "color");
+  if (color && color !== "#000000" && color !== "000000") {
+    var colorEl = createWEl(doc, "color");
+    setWAttr(colorEl, "val", color.replace("#", ""));
+    rPr.appendChild(colorEl);
+  }
+}
+
 function patchDocument(docXml, config) {
   var doc = parseXml(docXml);
   var paragraphs = getEls(doc, "p");
+  var headingsToNumber = [];
+
+  // Track whether we have passed the cover page (first page break).
+  // pastFirstPage=false → still on cover, skip font/size/indent changes.
+  // Spacing is still applied everywhere (line spacing changes don't hurt cover).
+  var pastFirstPage = !config.skipCover; // if skipCover is off, treat all as body
 
   paragraphs.forEach(function(para) {
     var styleId = getParaStyleId(para) || "Normal";
     var headingLevel = getHeadingLevel(styleId);
     var isHeading = headingLevel > 0;
+
+    // ---- Cover page detection ----
+    if (!pastFirstPage) {
+      if (hasPageBreakBefore(para)) {
+        // This paragraph itself starts page 2 → process it below
+        pastFirstPage = true;
+      } else if (hasExplicitPageBreak(para) || hasLastRenderedPageBreak(para) || endsWithSectionPageBreak(para)) {
+        // This paragraph ends page 1 → next para is page 2; skip this one
+        pastFirstPage = true;
+        return;
+      } else {
+        // Still on cover page → only apply spacing (not font/size/indent)
+        if (!isHeading) {
+          patchParaSpacing(para, doc,
+            config.body.lineValue, config.body.lineRule,
+            config.body.beforePt, config.body.afterPt,
+            false); // no indent on cover
+        }
+        return;
+      }
+    }
 
     if (isHeading) {
       var hCfg = config.headings[headingLevel - 1] || {};
@@ -549,6 +662,11 @@ function patchDocument(docXml, config) {
         hCfg.beforePt != null ? hCfg.beforePt : 6,
         hCfg.afterPt  != null ? hCfg.afterPt  : 6,
         false);  // false = don't touch <w:ind> for headings
+      if (config.headingNumbering && config.headingNumbering !== "none") {
+        var pPr = ensureDirectChild(para, "pPr", doc, true);
+        removeAllDirectChildren(pPr, "numPr");
+        headingsToNumber.push({ para: para, level: headingLevel, text: getParaText(para) });
+      }
     } else {
       patchParaSpacing(para, doc,
         config.body.lineValue, config.body.lineRule,
@@ -567,16 +685,10 @@ function patchDocument(docXml, config) {
 
       if (!isHeading) {
         // Body: stamp font + size directly
-        if (config.body.font)   replaceDirectChild(rPr, "rFonts", buildRFonts(doc, config.body.font));
-        if (config.body.sizePt) {
-          replaceDirectChild(rPr, "sz",   buildSzEl(doc, "sz",   config.body.sizePt));
-          replaceDirectChild(rPr, "szCs", buildSzEl(doc, "szCs", config.body.sizePt));
-        }
+        applyRunFormatting(rPr, doc, config.body.font, config.body.sizePt, null, null);
       } else {
-        // Heading: strip direct font/size overrides so styles.xml takes effect
-        removeDirectChild(rPr, "rFonts");
-        removeDirectChild(rPr, "sz");
-        removeDirectChild(rPr, "szCs");
+        var headingCfg = config.headings[headingLevel - 1] || {};
+        applyRunFormatting(rPr, doc, headingCfg.font, headingCfg.sizePt, headingCfg.bold !== false, headingCfg.color || null);
         removeDirectChild(rPr, "rStyle");
       }
     });
@@ -588,14 +700,11 @@ function patchDocument(docXml, config) {
     var startNum = config.headingNumberingStart || 1;
     var firstH1 = true;
 
-    // Collect heading paragraphs in DOM order
-    var allParas = getEls(doc, "p");
-    allParas.forEach(function(para) {
-      var sid = getParaStyleId(para) || "";
-      var lvl = getHeadingLevel(sid); // 1-6, 0 = not heading
-      if (!lvl) return;
-
-      var idx = lvl - 1; // 0-based index
+    headingsToNumber.forEach(function(item) {
+      var para = item.para;
+      var idx = item.level - 1; // 0-based index
+      if (!item.text || !item.text.trim()) return;
+      if (firstH1 && idx > 0) return;
       if (idx === 0 && firstH1) {
         counters[0] = startNum - 1; // will be incremented below
         firstH1 = false;
@@ -630,7 +739,13 @@ function patchDocument(docXml, config) {
       // 3. Match leading number patterns (greedy, handles multi-part numbers)
       //    Covers: 1. | 1.1 | 1.1.1. | 第1章 | 第一章 | A. | (1) | 一、 | 1 space
       var numMatch = fullText.match(
-        /^(?:(?:\d+\.)*\d+[\s\.\u3000、，,\uff0c]+|第[\d○零一二三四五六七八九十百千]+[章节条款篇部附]\s*[\s\u3000]*|[A-Za-z][\.\)]\s+|[（(]\d+[)）]\s*|[一二三四五六七八九十]+[、\.\s\u3000]+)/
+        // Covers:
+        //   1  1.  1.1  1.1.1  — followed by separator OR directly by Chinese char
+        //   第1章  第一章  第一节
+        //   A.  B)
+        //   (1)  （1）
+        //   一、  二、
+        /^(?:(?:\d+\.)*\d+(?:[\s\.\u3000、，,\uff0c]+|(?=[\u4e00-\u9fff\uff00-\uffef]))|第[\d○零一二三四五六七八九十百千]+[章节条款篇部附]\s*[\s\u3000]*|[A-Za-z][\.\)]\s*|[（(]\d+[)）]\s*|[一二三四五六七八九十]+[、\.\s\u3000]+)/
       );
       if (numMatch) {
         var charsLeft = numMatch[0].length;
@@ -670,9 +785,9 @@ function patchDocument(docXml, config) {
   // Page margins
   if (config.margins) {
     var CM = 567; // 1cm ≈ 567 twips
-    var sectPr = getFirstEl(doc, "sectPr");
-    if (sectPr) {
-      removeDirectChild(sectPr, "pgMar");
+    var sectPrs = getEls(doc, "sectPr");
+    sectPrs.forEach(function(sectPr) {
+      removeAllDirectChildren(sectPr, "pgMar");
       var pgMar = createWEl(doc, "pgMar");
       setWAttr(pgMar, "top",    Math.round(config.margins.top    * CM));
       setWAttr(pgMar, "bottom", Math.round(config.margins.bottom * CM));
@@ -682,7 +797,7 @@ function patchDocument(docXml, config) {
       setWAttr(pgMar, "footer", 992);
       setWAttr(pgMar, "gutter", 0);
       sectPr.appendChild(pgMar);
-    }
+    });
   }
 
   return serializeXml(doc);
@@ -780,6 +895,7 @@ function collectConfig() {
     body: { font: bodyFont, sizePt: bodySizePt, lineValue: lv.lineValue, lineRule: lv.lineRule, beforePt: beforePt, afterPt: afterPt, indent: indent },
     headings: headings,
     margins: margins,
+    skipCover: document.getElementById("skip-cover").checked,
     headingNumbering: document.getElementById("heading-numbering").value,
     headingNumberingStart: parseInt(document.getElementById("heading-start").value) || 1,
   };
@@ -803,6 +919,7 @@ async function handleFile(file) {
       if (entry) files.set(paths[i], await entry.async("string"));
     }
     if (!files.has("word/document.xml")) throw new Error("无效的 Word 文档（缺少 document.xml）");
+    if (!files.has("word/styles.xml")) throw new Error("无效的 Word 文档（缺少 styles.xml）");
 
     appState.zip = zip;
     appState.files = files;
@@ -860,6 +977,7 @@ function resetToDefaults() {
   document.getElementById("indent-type").value = "2";
   document.getElementById("indent-chars").value = "2";
   document.getElementById("indent-custom-wrap").style.display = "none";
+  document.getElementById("skip-cover").checked = true;
   document.getElementById("heading-numbering").value = "numeric";
   document.getElementById("heading-start").value = "1";
   document.getElementById("margin-top").value = "2.54";

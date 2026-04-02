@@ -134,6 +134,8 @@ function patchPpr(styleEl, doc, { lineValue, lineRule, beforePt, afterPt, indent
     if (indent.left != null)      setWAttr(indEl, "left",      String(Math.round(indent.left * 20)));
     pPr.appendChild(indEl);
   }
+
+  return pPr;
 }
 
 /**
@@ -148,12 +150,6 @@ export function patchStyles(stylesXmlString, config) {
 
   // --- Patch Normal / body style ---
   const normalEl = getOrCreateStyle(doc, "Normal", NORMAL_IDS);
-  patchRpr(normalEl, doc, {
-    font: config.body.font,
-    sizePt: config.body.sizePt,
-    bold: false,
-    color: null,
-  });
   patchPpr(normalEl, doc, {
     lineValue: config.body.lineValue,
     lineRule: config.body.lineRule,
@@ -177,18 +173,15 @@ export function patchStyles(stylesXmlString, config) {
       styleEl.insertBefore(nameEl, styleEl.firstChild);
     }
 
-    patchRpr(styleEl, doc, {
-      font: hCfg.font,
-      sizePt: hCfg.sizePt,
-      bold: hCfg.bold !== false,
-      color: hCfg.color || null,
-    });
-    patchPpr(styleEl, doc, {
+    const headingPPr = patchPpr(styleEl, doc, {
       lineValue: hCfg.lineValue || config.body.lineValue,
       lineRule: hCfg.lineRule || config.body.lineRule,
       beforePt: hCfg.beforePt != null ? hCfg.beforePt : 6,
       afterPt: hCfg.afterPt != null ? hCfg.afterPt : 6,
     });
+    if (config.headingNumbering && config.headingNumbering !== "none") {
+      removeDirectChild(headingPPr, "numPr");
+    }
   });
 
   return serializeXml(doc);

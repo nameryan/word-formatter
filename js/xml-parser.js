@@ -35,7 +35,7 @@ export function createWEl(doc, localName) {
 
 // Set w:xxx attribute
 export function setWAttr(el, localName, value) {
-  el.setAttributeNS(W_NS, "w:" + localName, value);
+  el.setAttribute("w:" + localName, String(value));
 }
 
 // Ensure a direct child element exists, create if missing

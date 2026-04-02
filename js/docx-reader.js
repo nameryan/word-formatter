@@ -20,8 +20,6 @@ export async function loadDocx(file) {
   const filesToLoad = [
     "word/document.xml",
     "word/styles.xml",
-    "word/footnotes.xml",   // optional
-    "word/endnotes.xml",    // optional
   ];
 
   const files = new Map();
@@ -34,6 +32,9 @@ export async function loadDocx(file) {
 
   if (!files.has("word/document.xml")) {
     throw new Error("无效的 Word 文档（缺少 document.xml）");
+  }
+  if (!files.has("word/styles.xml")) {
+    throw new Error("无效的 Word 文档（缺少 styles.xml）");
   }
 
   return { zip, files };
